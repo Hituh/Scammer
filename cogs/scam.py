@@ -1,25 +1,98 @@
-import aiohttp
 import nextcord
 import os
-import random
+import json
 
-from nextcord import Interaction, Member, Object, SelectOption, slash_command
+from nextcord import Interaction, slash_command
+
 from nextcord.ext import tasks, commands
-from nextcord.ext.commands.bot import Bot
-from nextcord.ui import View, TextInput, Select
+from nextcord.ui import TextInput, Button, View, Modal
 from dotenv import load_dotenv, find_dotenv
+from API.find_player import find_player
 
 load_dotenv(find_dotenv())
 
 servers_str = os.getenv("SERVERS")
 SERVERS = [int(id_str) for id_str in servers_str.split(",")]
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+config_json_path = r"C:\Users\okazy\Desktop\AssociaterV2\configs\channels.json"
+scammers_channel_id = None
 
 
-class InputShort(nextcord.ui.TextInput):
-    def __init__(self, label, placeholder, required):
+def load_main_json():
+    global scammers_channel_id
+    try:
+        with open(config_json_path, "r") as json_file:
+            channels = json.load(json_file)
+        return channels
+    except FileNotFoundError:
+        print("No saved data found")
+        return None
+
+
+def load_active_scammers_json():
+    json_path = r"C:\Users\okazy\Desktop\AssociaterV2\data\active_scam_threads.json"
+    try:
+        with open(json_path, "r") as json_file:
+            channels = json.load(json_file)
+        return channels
+    except FileNotFoundError:
+        print("No saved data found")
+        return None
+
+
+def save_active_scammers_json(data):
+    json_path = r"C:\Users\okazy\Desktop\AssociaterV2\data\active_scam_threads.json"
+    with open(json_path, "w") as file:
+        json.dump(data, file, indent=2)
+
+
+async def create_thread(
+    channel, interaction, ign, description, discord="Undefined", discord_id="Undefined"
+):
+    thread = await channel.create_thread(
+        name=f"{ign} report.",
+        message=None,
+        auto_archive_duration=1440,
+        type=None,
+    )
+    await thread.add_user(interaction.user)
+    await interaction.send(
+        f"*Here is your report - {thread.mention}.*",
+        ephemeral=True,
+        delete_after=15,
+    )
+    await thread.send(
+        f"""**Thread created by {interaction.user.mention}**
+        **Scammer ign:** {ign}
+        **Scammer discord tag:** {discord if discord else "not provided"}
+        **Scammer discord id:** {discord_id if discord_id else "not provided"}
+        **Description:** {description}        
+        """
+    )
+    await thread.send(
+        f"\n{interaction.user.mention} please provide any more info (such as screenshots of the issue), to help us better resolve the issue.\nWe'll get back to you shortly"
+    )
+    active_channels = load_active_scammers_json()
+    print(active_channels)
+    active_channels.append(
+        {
+            "channel_id": channel.id,
+            "reporter_discord_id": interaction.user.id,
+            "scammer_name": ign,
+            "scammer_discord_tag": discord,
+            "scammer_discord_id": discord_id,
+            "description": description,
+        }
+    )
+    print(active_channels)
+    save_active_scammers_json(active_channels)
+
+
+class InputShort(TextInput):
+    def __init__(self, label, placeholder, required, min_length=0):
         super().__init__(
             label=label,
+            min_length=min_length,
             placeholder=placeholder,
             required=required,
             style=nextcord.TextInputStyle.short,
@@ -29,11 +102,12 @@ class InputShort(nextcord.ui.TextInput):
         print(self.value)
 
 
-class InputParagraph(nextcord.ui.TextInput):
+class InputParagraph(TextInput):
 
-    def __init__(self, label, placeholder, required):
+    def __init__(self, label, placeholder, required, min_length=0):
         super().__init__(
             label=label,
+            min_length=min_length,
             placeholder=placeholder,
             required=required,
             style=nextcord.TextInputStyle.paragraph,
@@ -43,35 +117,44 @@ class InputParagraph(nextcord.ui.TextInput):
         print(self.value)
 
 
-class Button(nextcord.ui.Button):
-    def __init__(self, label, style):
-        super().__init__(label=label, style=style)
+class Button(Button):
+    def __init__(self, label, style, custom_id):
+        super().__init__(label=label, style=style, custom_id=custom_id)
 
 
-class EmbedView(nextcord.ui.View):
+class EmbedView(View):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=None)
         self.bot = bot
-        self.check_button = Button("Search", nextcord.ButtonStyle.primary)
-        self.report_button = Button("Report", nextcord.ButtonStyle.danger)
-        self.add_item(self.check_button)
+        self.message_channel = None
+        self.search_button = Button(
+            "Search", nextcord.ButtonStyle.primary, "Searchbutton"
+        )
+        self.report_button = Button(
+            "Report", nextcord.ButtonStyle.danger, "Reportbutton"
+        )
+        self.add_item(self.search_button)
         self.add_item(self.report_button)
         self.report_button.callback = self.report_button_callback
-        self.check_button.callback = self.check_button_callback
+        self.search_button.callback = self.check_button_callback
 
     async def report_button_callback(self, interaction):
-        modal = ReportModal(self.bot, interaction, interaction.channel)
+        self.message_channel = interaction.channel
+        modal = ReportModal(self.bot, self.message_channel)
         await interaction.response.send_modal(modal)
 
     async def check_button_callback(self, interaction):
+        self.message_channel = interaction.channel
         modal = SearchModal(self.bot, interaction)
         await interaction.response.send_modal(modal)
 
 
-class SearchModal(nextcord.ui.Modal):
+class SearchModal(Modal):
     def __init__(self, bot: commands.Bot, interaction):
         super().__init__(title="Search menu.", timeout=None)
         self.bot = bot
+
+        self.scammers_channel_id = scammers_channel_id
         self.ign_input = InputShort("Write their in game name.", "Hituh", False)
         self.discord_input = InputShort("Write their discord name", "Hituh", False)
         self.discord_id_input = InputShort(
@@ -85,37 +168,85 @@ class SearchModal(nextcord.ui.Modal):
         await interaction.send("Tested", ephemeral=True, delete_after=30)
 
 
-class ReportModal(nextcord.ui.Modal):  # Inherit directly from `nextcord.ui.View`
-    def __init__(self, bot: commands.Bot, interaction, message_channel):
+class ReportModal(Modal):  # Inherit directly from `View`
+    def __init__(self, bot: commands.Bot, message_channel):
         super().__init__(
             title="Report menu.", timeout=None
         )  # Set timeout to None for persistence
         self.bot = bot
         self.channel = message_channel
-        self.ign_input = InputShort("Write their in game name.", "Hituh", True)
-        self.discord_input = InputShort("Write their discord name.", "Hituh", False)
-        self.discord_id_input = InputShort(
-            "Write their discord id (optional).", "158643072886898688", False
+        self.ign_input = InputShort(
+            "In game name. (Required)", "Hituh", True, min_length=3
         )
-        self.discord_description = InputParagraph(
-            "Write down short tldr of the issue.", "Tried to island scam me.", True
+        self.discord_input = InputShort(
+            "Discord name (not server name). (Optional)", "Hituh", False
+        )
+        self.discord_id_input = InputShort(
+            "Discord ID. (Optional).", "158643072886898688", False
+        )
+        self.description = InputParagraph(
+            "Short description of the issue. (Required)",
+            "Eg. Tried to island scam me.",
+            True,
+            min_length=5,
         )
         self.add_item(self.ign_input)
         self.add_item(self.discord_input)
         self.add_item(self.discord_id_input)
-        self.add_item(self.discord_description)
+        self.add_item(self.description)
 
     async def callback(self, interaction) -> None:
-        print(self.ign_input.value)
-        print(self.discord_input.value)
-        print(self.discord_id_input.value)
-        print(self.discord_description.value)
+        player_exists = find_player(self.ign_input.value)
+        if not player_exists:
+            await interaction.send(
+                f"Player {self.ign_input.value} not found. Did you write the name correctly?",
+                ephemeral=True,
+                delete_after=30,
+            )
+        if player_exists == None:
+            await interaction.send(
+                f"Something went wrong. Please contact Hituh for help.",
+                ephemeral=True,
+                delete_after=30,
+            )
+        if player_exists:
+            await interaction.send(
+                f"Player {self.ign_input.value} found. Opening thread...",
+                ephemeral=True,
+                delete_after=30,
+            )
+            await create_thread(
+                channel=self.channel,
+                interaction=interaction,
+                ign=self.ign_input.value,
+                discord=self.discord_input.value,
+                discord_id=self.discord_id_input.value,
+                description=self.description.value
+            )
+            
 
 
 class ScamCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.channels = load_main_json()
+        global scammers_channel_id
+        scammers_channel_id = self.channels[0]["scammers"]
 
+    @commands.Cog.listener()
+    async def on_ready(self):
+        self.bot.add_view(EmbedView(self.bot))
+        await self.compare_active_scam_threads.start()
+
+    @tasks.loop(seconds=5, reconnect=True)
+    async def compare_active_scam_threads(self):
+        active_channels_json = load_active_scammers_json()
+        for guild in self.bot.guilds:
+            print(guild.channels)
+            active_channels_discord = guild.get_channel(scammers_channel_id)
+        print(active_channels_json)
+        print(active_channels_discord)
+            
     @slash_command(
         guild_ids=SERVERS,
         description="Self assign roles",
@@ -127,10 +258,6 @@ class ScamCog(commands.Cog):
             description="To search for person press 'Search'.\nTo submit a report, press 'Submit' and continue with the steps."
         )
         await interaction.channel.send(embed=embed, view=view)
-
-    async def test(self, interaction):
-        modal = ReportModal(self.bot, interaction, interaction.channel)
-        await interaction.response.send_modal(modal)
 
 
 def setup(bot):
