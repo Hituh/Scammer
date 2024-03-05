@@ -4,3 +4,4 @@ API/__pycache__/find_player.cpython-310.pyc
 cogs/__pycache__/config.cpython-310.pyc
 cogs/__pycache__/extras.cpython-310.pyc
 data/active_scam_threads.json
+data/
