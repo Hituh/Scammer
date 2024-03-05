@@ -19,5 +19,4 @@ class ConfigCog(commands.Cog):
 
 
 def setup(bot):
-    print(SERVERS)
     bot.add_cog(ConfigCog(bot))

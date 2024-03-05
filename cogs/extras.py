@@ -32,5 +32,4 @@ class ExtrasCog(commands.Cog):
 
 
 def setup(bot):
-    print(SERVERS)
     bot.add_cog(ExtrasCog(bot))
