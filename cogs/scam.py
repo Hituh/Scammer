@@ -2,7 +2,7 @@ import nextcord
 import os
 import json
 
-from nextcord import Interaction, slash_command
+from nextcord import Interaction, slash_command, SlashOption
 
 from nextcord.ext import tasks, commands
 from nextcord.ui import TextInput, Button, View, Modal
@@ -76,7 +76,7 @@ async def create_thread(
             delete_after=15,
         )
         await thread.send(
-            f"""**Thread created by {interaction.user.mention}**
+            f"""
             **Scammer ign:** {ign}
             **Scammer discord tag:** {discord if discord else "not provided"}
             **Scammer discord id:** {discord_id if discord_id else "not provided"}
@@ -266,8 +266,68 @@ class ScamCog(commands.Cog):
             description="To search for person press 'Search'.\nTo submit a report, press 'Submit' and continue with the steps."
         )
         await interaction.channel.send(embed=embed, view=view)
-    
-    
+
+    @slash_command(
+        guild_ids=SERVERS,
+        description="Update information about scam report.",
+        default_member_permissions=8,
+    )
+    async def update_scam_embed(
+        self,
+        interaction,
+        ign: str = SlashOption(
+            description="Write the updated IGN. Leave blank for no change.",
+            required=False,
+        ),
+        discord: str = SlashOption(
+            description="Write the updated Discord TAG. Leave blank for no change.",
+            required=False,
+        ),
+        discord_id: str = SlashOption(
+            description="Write the updated Discord ID. Leave blank for no change",
+            required=False,
+        ),
+        description: str = SlashOption(
+            description="Write the updated description of the issue. Leave blank for no change.",
+            required=False,
+        ),
+    ):
+        active_channels_json = load_json(active_scam_threads_json_path)
+        for channel in active_channels_json:
+            if channel["channel_id"] == interaction.channel.id:
+                thread = interaction.channel
+                messages = await thread.history(limit=5, oldest_first=True).flatten()
+                if (ign and find_player(ign)) or not ign:
+                    await messages[1].edit(
+                        f"""
+                            **Reporter: <@{channel['reporter_discord_id']}>**
+                            **Scammer ign:** {ign if ign else channel['scammer_name']}
+                            **Scammer discord tag:** {discord if discord else channel['scammer_discord_tag']}
+                            **Scammer discord id:** {discord_id if discord_id else channel['scammer_discord_id']}
+                            **Description:** {description if description else channel['description']}        
+                            """
+                    )
+                    if ign:
+                        channel["scammer_name"] = ign
+                    if discord:
+                        channel["scammer_discord_tag"] = discord
+                    if discord_id:
+                        channel["scammer_discord_id"] = discord_id
+                    if description:
+                        channel["description"] = description
+                    save_json(active_channels_json, active_scam_threads_json_path)
+                    await interaction.send(
+                        f"Report info updated. Please check {messages[1].jump_url}",
+                        ephemeral=True,
+                        delete_after=15,
+                    )
+
+                else:
+                    await interaction.send("Couldn't find IGN.")
+                return True
+        await interaction.send(
+            "You shouldn't use that here.", ephemeral=True, delete_after=15
+        )
 
 
 def setup(bot):
