@@ -1,7 +1,8 @@
 import nextcord
 import os
 import json
-
+import shutil
+from datetime import datetime
 from nextcord import Interaction, slash_command, SlashOption
 
 from nextcord.ext import tasks, commands
@@ -20,7 +21,10 @@ active_scam_threads_json_path = (
     r"C:\Users\okazy\Desktop\AssociaterV2\data\active_scam_threads.json"
 )
 confirmed_scam_threads_json_path = (
-    r"C:\Users\okazy\AssociaterV2\data\confirmed_scam_threads.json"
+    r"C:\Users\okazy\Desktop\AssociaterV2\data\confirmed_scam_threads.json"
+)
+closed_scam_threads_json_path = (
+    r"C:\Users\okazy\Desktop\AssociaterV2\data\closed_scam_threads.json"
 )
 scammers_channel_id = None
 main_guild_id = None
@@ -57,15 +61,18 @@ async def create_thread(
             message=None,
             auto_archive_duration=1440,
             type=None,
+            invitable=False
         )
         active_channels.append(
             {
                 "channel_id": thread.id,
+                "status": "active",
                 "reporter_discord_id": interaction.user.id,
                 "scammer_name": ign,
                 "scammer_discord_tag": discord,
                 "scammer_discord_id": discord_id,
                 "description": description,
+                "reasons": ""
             }
         )
         save_json(active_channels, active_scam_threads_json_path)
@@ -77,6 +84,8 @@ async def create_thread(
         )
         await thread.send(
             f"""
+            ****
+            **Reporter: {interaction.user.mention}**
             **Scammer ign:** {ign}
             **Scammer discord tag:** {discord if discord else "not provided"}
             **Scammer discord id:** {discord_id if discord_id else "not provided"}
@@ -224,7 +233,6 @@ class ScamCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-
         config = load_json(config_json_path)
         main_guild_id = config["main_guild_id"]
         scammers_channel_id = config["scammers_channel_id"]
@@ -235,6 +243,7 @@ class ScamCog(commands.Cog):
         self.bot.add_view(MainEmbed(self.bot))
         self.compare_active_scam_threads.start()
 
+    
     @tasks.loop(seconds=5, reconnect=True)
     async def compare_active_scam_threads(self):
         active_channels_json = load_json(active_scam_threads_json_path)
@@ -292,30 +301,31 @@ class ScamCog(commands.Cog):
             required=False,
         ),
     ):
-        active_channels_json = load_json(active_scam_threads_json_path)
-        for channel in active_channels_json:
-            if channel["channel_id"] == interaction.channel.id:
+        active_reports_json = load_json(active_scam_threads_json_path)
+        for report in active_reports_json:
+            if report["channel_id"] == interaction.channel.id:
                 thread = interaction.channel
                 messages = await thread.history(limit=5, oldest_first=True).flatten()
                 if (ign and find_player(ign)) or not ign:
                     await messages[1].edit(
                         f"""
-                            **Reporter: <@{channel['reporter_discord_id']}>**
-                            **Scammer ign:** {ign if ign else channel['scammer_name']}
-                            **Scammer discord tag:** {discord if discord else channel['scammer_discord_tag']}
-                            **Scammer discord id:** {discord_id if discord_id else channel['scammer_discord_id']}
-                            **Description:** {description if description else channel['description']}        
+                        ** **
+                            **Reporter:** <@{report['reporter_discord_id']}>
+                            **Scammer ign:** {ign if ign else report['scammer_name']}
+                            **Scammer discord tag:** {discord if discord else report['scammer_discord_tag']}
+                            **Scammer discord id:** {discord_id if discord_id else report['scammer_discord_id']} <@{discord_id if discord_id else report['scammer_discord_id']}>
+                            **Description:** {description if description else report['description']}        
                             """
                     )
                     if ign:
-                        channel["scammer_name"] = ign
+                        report["scammer_name"] = ign
                     if discord:
-                        channel["scammer_discord_tag"] = discord
+                        report["scammer_discord_tag"] = discord
                     if discord_id:
-                        channel["scammer_discord_id"] = discord_id
+                        report["scammer_discord_id"] = discord_id
                     if description:
-                        channel["description"] = description
-                    save_json(active_channels_json, active_scam_threads_json_path)
+                        report["description"] = description
+                    save_json(active_reports_json, active_scam_threads_json_path)
                     await interaction.send(
                         f"Report info updated. Please check {messages[1].jump_url}",
                         ephemeral=True,
@@ -323,12 +333,69 @@ class ScamCog(commands.Cog):
                     )
 
                 else:
-                    await interaction.send("Couldn't find IGN.")
+                    await interaction.send(
+                        "Couldn't find IGN.", ephemeral=True, delete_after=15
+                    )
                 return True
         await interaction.send(
             "You shouldn't use that here.", ephemeral=True, delete_after=15
         )
 
+    @slash_command(
+        guild_ids=SERVERS,
+        description="Update information about scam report.",
+        default_member_permissions=8,
+    )
+    async def close_scam(
+        self,
+        interaction,
+        type: str = SlashOption(
+            name="type",
+            description="How to close the report.",
+            choices={"Deny": "deny",  "Confirm": "confirm"},
+        ),
+        reason:  str = SlashOption(name="reason", description="Reason for decision.")
+    ):
+
+        active_reports_json = load_json(active_scam_threads_json_path)
+        for report in active_reports_json:
+            if report["channel_id"] == interaction.channel.id:
+                thread = interaction.channel
+                if type == "deny":
+                    closed_reports_json = load_json(closed_scam_threads_json_path)
+                    report["status"] = "denied"
+                    report['reason'] = reason
+                    closed_reports_json.append(report)
+                    active_reports_json.remove(report)
+                    save_json(closed_reports_json, closed_scam_threads_json_path)
+                    save_json(active_reports_json, active_scam_threads_json_path)
+                    await thread.send(f'<@{report["reporter_discord_id"]}> the report has been denied by the admins.')
+                    await thread.edit(archived = True)
+                    return True
+                if type == 'confirm':
+                    confirmed_reports_json = load_json(confirmed_scam_threads_json_path)
+                    report["status"] = "confirmed"
+                    report['reason'] = reason
+                    confirmed_reports_json.append(report)
+                    active_reports_json.remove(report)
+                    save_json(confirmed_reports_json, confirmed_scam_threads_json_path)
+                    save_json(active_reports_json, active_scam_threads_json_path)
+                    await thread.send(f'<@{report["reporter_discord_id"]}> the report has been confirmed by the admins.')
+                    await thread.edit(archived = True)
+                    return True
+
+        await interaction.send(
+            "You shouldn't use that here.", ephemeral=True, delete_after=15
+        )
+    # @slash_command(
+    #     guild_ids=SERVERS,
+    #     description="Update information about scam report.",
+    #     default_member_permissions=8,
+    # )
+    # async def reopen(self, interaction):
+    #     active_reports_json = load_json(active_scam_threads_json_path)
+    #     for report in active_reports_json:
+    #         if report["channel_id"] == interaction.channel.id:
 
 def setup(bot):
     bot.add_cog(ScamCog(bot))
