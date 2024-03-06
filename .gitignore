@@ -5,3 +5,4 @@ cogs/__pycache__/config.cpython-310.pyc
 cogs/__pycache__/extras.cpython-310.pyc
 data/active_scam_threads.json
 data/
+extras/__pycache__/json_handling.cpython-310.pyc

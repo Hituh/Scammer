@@ -8,6 +8,7 @@ from nextcord.ext import tasks, commands
 from nextcord.ui import TextInput, Button, View, Modal
 from dotenv import load_dotenv, find_dotenv
 from API.find_player import find_player
+from extras.json_handling import load_json, save_json
 
 load_dotenv(find_dotenv())
 
@@ -15,76 +16,76 @@ servers_str = os.getenv("SERVERS")
 SERVERS = [int(id_str) for id_str in servers_str.split(",")]
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 config_json_path = r"C:\Users\okazy\Desktop\AssociaterV2\configs\config.json"
+active_scam_threads_json_path = (
+    r"C:\Users\okazy\Desktop\AssociaterV2\data\active_scam_threads.json"
+)
+confirmed_scam_threads_json_path = (
+    r"C:\Users\okazy\AssociaterV2\data\confirmed_scam_threads.json"
+)
 scammers_channel_id = None
 main_guild_id = None
 
 
-def load_main_jsons():
-    global scammers_channel_id, main_guild_id
-    try:
-        with open(config_json_path, "r") as json_file:
-            data = json.load(json_file)
-            main_guild_id = data["main_guild_id"]
-            scammers_channel_id = data["scammers_channel_id"]
-    except FileNotFoundError:
-        print("No saved data found")
-
-
-def load_active_scammers_json():
-    json_path = r"C:\Users\okazy\Desktop\AssociaterV2\data\active_scam_threads.json"
-    try:
-        with open(json_path, "r") as json_file:
-            channels = json.load(json_file)
-        return channels
-    except FileNotFoundError:
-        print("No saved data found")
-        return None
-
-
-def save_active_scammers_json(data):
-    json_path = r"C:\Users\okazy\Desktop\AssociaterV2\data\active_scam_threads.json"
-    with open(json_path, "w") as file:
-        json.dump(data, file, indent=2)
+def find_existing(active_channels, ign, discord, discord_id):
+    key1, key2, key3 = "scammer_name", "scammer_discord_tag", "scammer_discord_id"
+    for item in active_channels:
+        if (
+            item[key1].lower() == ign.lower()
+            or item[key2].lower() == discord.lower()
+            or item[key3].lower() == discord_id.lower()
+        ):
+            return item["channel_id"]
+    return False
 
 
 async def create_thread(
     channel, interaction, ign, description, discord="Undefined", discord_id="Undefined"
 ):
-    thread = await channel.create_thread(
-        name=f"{ign} report.",
-        message=None,
-        auto_archive_duration=1440,
-        type=None,
-    )
-    await thread.add_user(interaction.user)
-    await interaction.send(
-        f"*Here is your report - {thread.mention}.*",
-        ephemeral=True,
-        delete_after=15,
-    )
-    await thread.send(
-        f"""**Thread created by {interaction.user.mention}**
-        **Scammer ign:** {ign}
-        **Scammer discord tag:** {discord if discord else "not provided"}
-        **Scammer discord id:** {discord_id if discord_id else "not provided"}
-        **Description:** {description}        
-        """
-    )
-    await thread.send(
-        f"\n{interaction.user.mention} please provide any more info (such as screenshots of the issue), to help us better resolve the issue.\nWe'll get back to you shortly"
-    )
-    active_channels = load_active_scammers_json()
-    active_channels.append(
-        {
-            "channel_id": thread.id,
-            "reporter_discord_id": interaction.user.id,
-            "scammer_name": ign,
-            "scammer_discord_tag": discord,
-            "scammer_discord_id": discord_id,
-            "description": description,
-        }
-    )
-    save_active_scammers_json(active_channels)
+    active_channels = load_json(active_scam_threads_json_path)
+    exists = find_existing(active_channels, ign, discord, discord_id)
+    if exists != False:
+        thread = channel.get_thread(exists)
+        await thread.add_user(interaction.user)
+        await interaction.send(
+            f"There is already an open thread for this person {thread.mention}.",
+            ephemeral=True,
+            delete_after=15,
+        )
+    else:
+        thread = await channel.create_thread(
+            name=f"{ign} report.",
+            message=None,
+            auto_archive_duration=1440,
+            type=None,
+        )
+        active_channels.append(
+            {
+                "channel_id": thread.id,
+                "reporter_discord_id": interaction.user.id,
+                "scammer_name": ign,
+                "scammer_discord_tag": discord,
+                "scammer_discord_id": discord_id,
+                "description": description,
+            }
+        )
+        save_json(active_channels, active_scam_threads_json_path)
+        await thread.add_user(interaction.user)
+        await interaction.send(
+            f"*Here is your report - {thread.mention}.*",
+            ephemeral=True,
+            delete_after=15,
+        )
+        await thread.send(
+            f"""**Thread created by {interaction.user.mention}**
+            **Scammer ign:** {ign}
+            **Scammer discord tag:** {discord if discord else "not provided"}
+            **Scammer discord id:** {discord_id if discord_id else "not provided"}
+            **Description:** {description}        
+            """
+        )
+        await thread.send(
+            f"\n{interaction.user.mention} please provide any more info (such as screenshots of the issue), to help us better resolve the issue.\nWe'll get back to you shortly"
+        )
 
 
 class InputShort(TextInput):
@@ -143,11 +144,9 @@ class MainEmbed(View):
 
 
 class SearchModal(Modal):
-    def __init__(self, bot: commands.Bot, interaction):
+    def __init__(self, bot: commands.Bot):
         super().__init__(title="Search menu.", timeout=None)
         self.bot = bot
-
-        self.scammers_channel_id = scammers_channel_id
         self.ign_input = InputShort("Write their in game name.", "Hituh", False)
         self.discord_input = InputShort("Write their discord name", "Hituh", False)
         self.discord_id_input = InputShort(
@@ -206,7 +205,7 @@ class ReportModal(Modal):  # Inherit directly from `View`
             await interaction.send(
                 f"Player {self.ign_input.value} found. Opening thread...",
                 ephemeral=True,
-                delete_after=30,
+                delete_after=15,
             )
             await create_thread(
                 channel=self.channel,
@@ -225,7 +224,10 @@ class ScamCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        load_main_jsons()
+
+        config = load_json(config_json_path)
+        main_guild_id = config["main_guild_id"]
+        scammers_channel_id = config["scammers_channel_id"]
         for guild in self.bot.guilds:
             if guild.id == int(main_guild_id):
                 self.scammers_channel = guild.get_channel(int(scammers_channel_id))
@@ -235,13 +237,15 @@ class ScamCog(commands.Cog):
 
     @tasks.loop(seconds=5, reconnect=True)
     async def compare_active_scam_threads(self):
-        active_channels_json = load_active_scammers_json()
-        active_channel_ids = {channel["channel_id"] for channel in active_channels_json}
+        active_channels_json = load_json(active_scam_threads_json_path)
+        active_channels_ids = {
+            channel["channel_id"] for channel in active_channels_json
+        }
 
         if self.scammers_channel:
             thread_ids = {thread.id for thread in self.scammers_channel.threads}
 
-            channels_to_remove = active_channel_ids - thread_ids
+            channels_to_remove = active_channels_ids - thread_ids
 
             active_channels_json = [
                 channel
@@ -249,7 +253,7 @@ class ScamCog(commands.Cog):
                 if channel["channel_id"] not in channels_to_remove
             ]
 
-            save_active_scammers_json(active_channels_json)
+            save_json(active_channels_json, active_scam_threads_json_path)
 
     @slash_command(
         guild_ids=SERVERS,
@@ -262,6 +266,8 @@ class ScamCog(commands.Cog):
             description="To search for person press 'Search'.\nTo submit a report, press 'Submit' and continue with the steps."
         )
         await interaction.channel.send(embed=embed, view=view)
+    
+    
 
 
 def setup(bot):
